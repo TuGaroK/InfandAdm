@@ -1,0 +1,32 @@
+# Local reference materials
+/reference/
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+
+# Generated output
+dist/
+build/
+*.zip
+*.log
+
+# Local editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
