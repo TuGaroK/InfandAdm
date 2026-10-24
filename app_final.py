@@ -5,10 +5,14 @@ from contextlib import asynccontextmanager
 from decimal import Decimal
 import json
 import logging
+import math
 import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, ConfigDict, StrictFloat, StrictInt
+
+from calculator import calculate_subject
 
 
 APP_NAME = os.getenv("APP_NAME", "Калькулятор накопа")
@@ -73,6 +77,85 @@ def _subject_detail(subject: dict[str, object]) -> dict[str, object]:
         "rounding_policy": subject["rounding_policy"],
         "rounding_note": subject["rounding_note"],
         "notes": list(subject["notes"]),
+    }
+
+
+class CalculationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    grades: dict[str, StrictInt | StrictFloat]
+
+
+def _validate_complete_grades(
+    subject: dict[str, object],
+    grades: dict[str, int | float],
+) -> None:
+    component_ids = [component["id"] for component in subject["components"]]
+    unknown = [
+        component_id
+        for component_id in grades
+        if component_id not in component_ids
+    ]
+    missing = [
+        component_id
+        for component_id in component_ids
+        if component_id not in grades
+    ]
+
+    if unknown or missing:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Для расчёта нужны оценки всех компонентов предмета.",
+                "missing_components": missing,
+                "unknown_components": unknown,
+            },
+        )
+
+    grade_min = subject["grade_min"]
+    grade_max = subject["grade_max"]
+    for component_id, grade in grades.items():
+        if isinstance(grade, float) and not math.isfinite(grade):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Оценка {component_id} должна быть конечным числом.",
+            )
+        if grade < grade_min or grade > grade_max:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Оценка {component_id} должна быть от 0 до 10.",
+            )
+
+
+def _json_number(value: Decimal) -> int | float:
+    if value == value.to_integral_value():
+        return int(value)
+    return float(value)
+
+
+def _calculation_response(result: dict[str, object]) -> dict[str, object]:
+    contributions = [
+        {
+            "id": contribution["id"],
+            "label": contribution["label"],
+            "weight": _json_number(contribution["weight"]),
+            "grade": _json_number(contribution["grade"]),
+            "contribution": _json_number(contribution["contribution"]),
+        }
+        for contribution in result["contributions"]
+    ]
+    return {
+        "subject_id": result["subject_id"],
+        "subject_name": result["subject_name"],
+        "raw_score": _json_number(result["raw_score"]),
+        "score": _json_number(result["score"]),
+        "score_cap": _json_number(result["score_cap"]),
+        "is_complete": result["is_complete"],
+        "missing_components": result["missing_components"],
+        "rounding_policy": result["rounding_policy"],
+        "rounded_grade": result["rounded_grade"],
+        "contributions": contributions,
+        "message": result["message"],
     }
 
 
@@ -146,6 +229,14 @@ def list_subjects():
 @app.get("/subjects/{subject_id}")
 def subject_detail(subject_id: str):
     return _subject_detail(_get_subject(subject_id))
+
+
+@app.post("/subjects/{subject_id}/calculate")
+def calculate(subject_id: str, request: CalculationRequest):
+    subject = _get_subject(subject_id)
+    grades = request.grades
+    _validate_complete_grades(subject, grades)
+    return _calculation_response(calculate_subject(subject, grades))
 
 
 @app.get("/hello")

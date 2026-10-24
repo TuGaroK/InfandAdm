@@ -152,3 +152,143 @@ def test_unknown_subject_returns_404():
     assert response.json() == {
         "detail": "Предмет с идентификатором 'not-a-subject' не найден."
     }
+
+
+def test_python_full_calculation_returns_contributions_and_json_numbers():
+    request_body = {
+        "grades": {
+            "homework_avg": 6.5,
+            "mini_tests_avg": 8.5,
+            "independent_avg": 7,
+            "exam": 8,
+        }
+    }
+
+    with TestClient(app_final.app) as client:
+        response = client.post("/subjects/python/calculate", json=request_body)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "subject_id": "python",
+        "subject_name": "Программирование на Python",
+        "raw_score": 7.75,
+        "score": 7.75,
+        "score_cap": 10,
+        "is_complete": True,
+        "missing_components": [],
+        "rounding_policy": "half_up",
+        "rounded_grade": 8,
+        "contributions": [
+            {
+                "id": "homework_avg",
+                "label": "Средняя оценка за домашние задания",
+                "weight": 0.1,
+                "grade": 6.5,
+                "contribution": 0.65,
+            },
+            {
+                "id": "mini_tests_avg",
+                "label": "Средняя оценка за мини-тесты",
+                "weight": 0.2,
+                "grade": 8.5,
+                "contribution": 1.7,
+            },
+            {
+                "id": "independent_avg",
+                "label": "Средняя оценка за самостоятельные работы",
+                "weight": 0.2,
+                "grade": 7,
+                "contribution": 1.4,
+            },
+            {
+                "id": "exam",
+                "label": "Экзамен",
+                "weight": 0.5,
+                "grade": 8,
+                "contribution": 4,
+            },
+        ],
+        "message": "Полный расчёт выполнен: накопленная оценка — 7.75.",
+    }
+    assert isinstance(response.json()["score"], float)
+    assert all(
+        isinstance(item["contribution"], int | float)
+        for item in response.json()["contributions"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("subject_id", "grades", "raw_score", "score", "rounded_grade"),
+    [
+        (
+            "discrete",
+            {
+                "hw1": 6.5,
+                "hw2": 8.5,
+                "test1": 7,
+                "test2": 8,
+                "exam": 9,
+                "participation": 10,
+            },
+            9.1,
+            9.1,
+            None,
+        ),
+        (
+            "discrete",
+            {
+                "hw1": 10,
+                "hw2": 10,
+                "test1": 10,
+                "test2": 10,
+                "exam": 10,
+                "participation": 10,
+            },
+            11,
+            10,
+            None,
+        ),
+        (
+            "python",
+            {
+                "homework_avg": 4.5,
+                "mini_tests_avg": 4.5,
+                "independent_avg": 4.5,
+                "exam": 4.5,
+            },
+            4.5,
+            4.5,
+            5,
+        ),
+        ("infrastructure", {"project": 8.5}, 8.5, 8.5, 9),
+    ],
+)
+def test_full_calculation_examples(
+    subject_id, grades, raw_score, score, rounded_grade
+):
+    with TestClient(app_final.app) as client:
+        response = client.post(
+            f"/subjects/{subject_id}/calculate",
+            json={"grades": grades},
+        )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["raw_score"] == raw_score
+    assert result["score"] == score
+    assert result["rounded_grade"] == rounded_grade
+    assert result["is_complete"] is True
+    assert result["missing_components"] == []
+
+
+def test_calculation_for_unknown_subject_returns_404():
+    with TestClient(app_final.app) as client:
+        response = client.post(
+            "/subjects/not-a-subject/calculate",
+            json={"grades": {"project": 8.5}},
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": "Предмет с идентификатором 'not-a-subject' не найден."
+    }
