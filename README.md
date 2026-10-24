@@ -15,14 +15,59 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
+Для запуска тестов вместо последней команды установите зависимости разработки:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+```
+
+## Настройки окружения
+
+Доступны следующие переменные:
+
+- `APP_NAME` — название сервиса, по умолчанию `Калькулятор накопа`;
+- `APP_VERSION` — версия API, по умолчанию `0.1.0`;
+- `LOG_LEVEL` — уровень логирования, по умолчанию `INFO`;
+- `APP_AUTHOR` — подпись автора в сохранённом учебном маршруте `/info`.
+
+Файл `.env.example` содержит только примеры и автоматически не загружается.
+В PowerShell переменные нужно задать в текущем сеансе перед запуском:
+
+```powershell
+$env:APP_NAME = "Калькулятор группы"
+$env:APP_VERSION = "0.1.0"
+$env:LOG_LEVEL = "INFO"
+.\.venv\Scripts\python.exe -m uvicorn app_final:app
+```
+
+Неизвестное значение `LOG_LEVEL` заменяется на `INFO` с предупреждением.
+
 ## Запуск
+
+Обычный запуск без автоматической перезагрузки:
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn app_final:app
+```
+
+Для разработки:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app_final:app --reload
 ```
 
 После запуска доступны:
 
 - приложение: <http://127.0.0.1:8000/>
 - проверка состояния: <http://127.0.0.1:8000/health>
+- версия: <http://127.0.0.1:8000/version>
 - интерактивная документация: <http://127.0.0.1:8000/docs>
+
+При запуске и остановке сервис пишет понятное сообщение в консоль. Уровень
+этих сообщений задаёт `LOG_LEVEL`.
+
+## Тесты
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -v
+```
