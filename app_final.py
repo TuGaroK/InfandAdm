@@ -1,4 +1,4 @@
-"""Рабочая основа сервиса расчёта накопленной оценки."""
+"""FastAPI-сервис расчёта накопленной оценки."""
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -8,9 +8,12 @@ import logging
 import math
 import os
 from pathlib import Path
+from typing import cast
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, ConfigDict, StrictFloat, StrictInt
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
 
 from calculator import calculate_subject
 
@@ -81,50 +84,163 @@ def _subject_detail(subject: dict[str, object]) -> dict[str, object]:
 
 
 class CalculationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "grades": {
+                        "homework_avg": 6.5,
+                        "mini_tests_avg": 8.5,
+                        "independent_avg": 7,
+                        "exam": 8,
+                    }
+                },
+                {
+                    "grades": {
+                        "homework_avg": 6.5,
+                        "mini_tests_avg": None,
+                    }
+                },
+            ]
+        },
+    )
 
-    grades: dict[str, StrictInt | StrictFloat]
+    grades: dict[str, object | None]
 
 
-def _validate_complete_grades(
+_GRADE_HINT = "Оценка должна быть числом от 0 до 10 включительно."
+
+
+def _grade_error(
+    component_id: str,
+    error_type: str,
+    message: str,
+) -> dict[str, object]:
+    return {
+        "loc": ["body", "grades", component_id],
+        "type": error_type,
+        "msg": message,
+        "hint": _GRADE_HINT,
+    }
+
+
+def _validate_grades(
     subject: dict[str, object],
-    grades: dict[str, int | float],
-) -> None:
-    component_ids = [component["id"] for component in subject["components"]]
-    unknown = [
-        component_id
-        for component_id in grades
-        if component_id not in component_ids
+    grades: dict[str, object | None],
+) -> dict[str, int | float | None]:
+    component_ids = [
+        str(component["id"]) for component in subject["components"]
     ]
-    missing = [
-        component_id
-        for component_id in component_ids
-        if component_id not in grades
-    ]
+    grade_min = int(subject["grade_min"])
+    grade_max = int(subject["grade_max"])
+    errors = []
+    validated_grades: dict[str, int | float | None] = {}
 
-    if unknown or missing:
+    for component_id, grade in grades.items():
+        if component_id not in component_ids:
+            errors.append(
+                {
+                    "loc": ["body", "grades", component_id],
+                    "type": "unknown_component",
+                    "msg": (
+                        f"Компонент '{component_id}' не найден у этого предмета."
+                    ),
+                }
+            )
+            continue
+
+        if grade is None:
+            validated_grades[component_id] = None
+            continue
+
+        if type(grade) not in (int, float):
+            errors.append(
+                _grade_error(
+                    component_id,
+                    "grade_type",
+                    "Оценка должна быть конечным JSON-числом или null.",
+                )
+            )
+            continue
+
+        numeric_grade = cast(int | float, grade)
+        if isinstance(numeric_grade, float) and not math.isfinite(numeric_grade):
+            errors.append(
+                _grade_error(
+                    component_id,
+                    "grade_not_finite",
+                    "Оценка должна быть конечным числом.",
+                )
+            )
+            continue
+
+        if numeric_grade > grade_max:
+            errors.append(
+                _grade_error(
+                    component_id,
+                    "grade_too_high",
+                    "Вы непризнанный гений или просто ошиблись числом?",
+                )
+            )
+            continue
+
+        if numeric_grade < grade_min:
+            errors.append(
+                _grade_error(
+                    component_id,
+                    "grade_too_low",
+                    "Ничего страшного, Цезарь тоже не сразу стал салатом.",
+                )
+            )
+            continue
+
+        validated_grades[component_id] = numeric_grade
+
+    if errors:
+        raise HTTPException(status_code=422, detail=errors)
+
+    if not any(grade is not None for grade in validated_grades.values()):
         raise HTTPException(
             status_code=422,
-            detail={
-                "message": "Для расчёта нужны оценки всех компонентов предмета.",
-                "missing_components": missing,
-                "unknown_components": unknown,
-            },
+            detail=[
+                {
+                    "loc": ["body", "grades"],
+                    "type": "no_known_grades",
+                    "msg": (
+                        "Нечего рассчитывать: укажите хотя бы одну "
+                        "известную оценку."
+                    ),
+                }
+            ],
         )
 
-    grade_min = subject["grade_min"]
-    grade_max = subject["grade_max"]
-    for component_id, grade in grades.items():
-        if isinstance(grade, float) and not math.isfinite(grade):
-            raise HTTPException(
-                status_code=422,
-                detail=f"Оценка {component_id} должна быть конечным числом.",
-            )
-        if grade < grade_min or grade > grade_max:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Оценка {component_id} должна быть от 0 до 10.",
-            )
+    return validated_grades
+
+
+def _safe_request_errors(
+    exception: RequestValidationError,
+) -> list[dict[str, object]]:
+    errors = []
+    for error in exception.errors():
+        location = [
+            part if isinstance(part, (str, int)) else str(part)
+            for part in error.get("loc", ())
+        ]
+        errors.append(
+            {
+                "loc": location,
+                "type": str(error.get("type", "validation_error")),
+                "msg": str(error.get("msg", "Некорректный запрос.")),
+            }
+        )
+    return errors
+
+
+def _optional_json_number(value: Decimal | None) -> int | float | None:
+    if value is None:
+        return None
+    return _json_number(value)
 
 
 def _json_number(value: Decimal) -> int | float:
@@ -139,8 +255,10 @@ def _calculation_response(result: dict[str, object]) -> dict[str, object]:
             "id": contribution["id"],
             "label": contribution["label"],
             "weight": _json_number(contribution["weight"]),
-            "grade": _json_number(contribution["grade"]),
-            "contribution": _json_number(contribution["contribution"]),
+            "grade": _optional_json_number(contribution["grade"]),
+            "contribution": _optional_json_number(
+                contribution["contribution"]
+            ),
         }
         for contribution in result["contributions"]
     ]
@@ -198,6 +316,21 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title=APP_NAME, version=APP_VERSION, lifespan=lifespan)
 
 
+@app.exception_handler(RequestValidationError)
+async def request_validation_error(
+    request: Request,
+    exception: RequestValidationError,
+):
+    errors = _safe_request_errors(exception)
+    error_types = ",".join(str(error["type"]) for error in errors)
+    logger.warning(
+        "Ошибка валидации запроса: path=%s types=%s.",
+        request.url.path,
+        error_types,
+    )
+    return JSONResponse(status_code=422, content={"detail": errors})
+
+
 @app.get("/")
 def root():
     return {
@@ -233,22 +366,26 @@ def subject_detail(subject_id: str):
 
 @app.post("/subjects/{subject_id}/calculate")
 def calculate(subject_id: str, request: CalculationRequest):
-    subject = _get_subject(subject_id)
-    grades = request.grades
-    _validate_complete_grades(subject, grades)
-    return _calculation_response(calculate_subject(subject, grades))
+    try:
+        subject = _get_subject(subject_id)
+        grades = _validate_grades(subject, request.grades)
+        result = calculate_subject(subject, grades)
+    except HTTPException as error:
+        error_type = "subject_not_found"
+        if isinstance(error.detail, list) and error.detail:
+            error_type = str(error.detail[0].get("type", "calculation_error"))
+        logger.warning(
+            "Ошибка расчёта: subject=%s status=%s type=%s.",
+            subject_id,
+            error.status_code,
+            error_type,
+        )
+        raise
 
-
-@app.get("/hello")
-def hello(name: str = "студент"):
-    return {"message": f"Привет, {name}!"}
-
-
-@app.get("/info")
-def info():
-    app_author = os.getenv("APP_AUTHOR", "Не указан")
-
-    return {
-        "app_name": APP_NAME,
-        "author": app_author,
-    }
+    logger.info(
+        "Расчёт выполнен: subject=%s complete=%s missing=%s.",
+        subject_id,
+        result["is_complete"],
+        len(result["missing_components"]),
+    )
+    return _calculation_response(result)
