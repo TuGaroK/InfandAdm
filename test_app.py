@@ -1,4 +1,5 @@
 import importlib
+import logging
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
@@ -261,6 +262,35 @@ def test_python_full_calculation_returns_contributions_and_json_numbers():
             5,
         ),
         ("infrastructure", {"project": 8.5}, 8.5, 8.5, 9),
+        (
+            "discrete",
+            {
+                "hw1": 0,
+                "hw2": 0,
+                "test1": 0,
+                "test2": 0,
+                "exam": 0,
+                "participation": 0,
+            },
+            0,
+            0,
+            None,
+        ),
+        (
+            "python",
+            {
+                "homework_avg": 6.5,
+                "mini_tests_avg": 6.5,
+                "independent_avg": 6.5,
+                "exam": 6.5,
+            },
+            6.5,
+            6.5,
+            7,
+        ),
+        ("infrastructure", {"project": 9.5}, 9.5, 9.5, 10),
+        ("infrastructure", {"project": 0}, 0, 0, 0),
+        ("infrastructure", {"project": 10}, 10, 10, 10),
     ],
 )
 def test_full_calculation_examples(
@@ -623,3 +653,79 @@ def test_calculation_logs_error_without_invalid_grade(monkeypatch):
         )
     ]
     assert "10.5" not in messages[0]
+
+
+def test_sum_above_ten_is_capped_without_normalizing_contributions():
+    with TestClient(app_final.app) as client:
+        response = client.post(
+            "/subjects/discrete/calculate",
+            json={
+                "grades": {
+                    "hw1": 10,
+                    "hw2": 10,
+                    "test1": 10,
+                    "test2": 10,
+                    "exam": 10,
+                    "participation": 5,
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["raw_score"] == 10.5
+    assert result["score"] == 10
+    assert result["rounded_grade"] is None
+    assert result["is_complete"] is True
+    assert result["rounding_policy"] == "unknown"
+    assert [item["contribution"] for item in result["contributions"]] == [
+        2,
+        2,
+        1,
+        1,
+        4,
+        0.5,
+    ]
+
+
+def test_docs_page_is_available():
+    with TestClient(app_final.app) as client:
+        response = client.get("/docs")
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+
+
+def test_log_level_accepts_standard_names_and_falls_back_to_info(monkeypatch):
+    try:
+        with monkeypatch.context() as environment:
+            environment.setenv("LOG_LEVEL", " error ")
+            configured_app = importlib.reload(app_final)
+
+            assert configured_app.LOG_LEVEL == "ERROR"
+            assert configured_app.logger.level == logging.ERROR
+
+            environment.setenv("LOG_LEVEL", "verbose")
+            configured_app = importlib.reload(app_final)
+
+            assert configured_app.LOG_LEVEL == "INFO"
+            assert configured_app.logger.level == logging.INFO
+    finally:
+        importlib.reload(app_final)
+
+
+def test_subject_catalog_loads_next_to_the_application_module(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    configured_app = importlib.reload(app_final)
+
+    with TestClient(configured_app.app) as client:
+        response = client.get("/subjects")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["subjects"]] == [
+        "discrete",
+        "python",
+        "infrastructure",
+    ]
